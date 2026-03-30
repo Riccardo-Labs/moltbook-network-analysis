@@ -1,0 +1,30 @@
+# Ambiente virtuale
+venv/
+.venv/
+env/
+
+# Database (dati grezzi, non versionare)
+data/*.db
+data/*.sqlite
+
+# Logs
+logs/
+
+# Chiavi API e config sensibili
+.env
+config_local.py
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
