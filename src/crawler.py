@@ -5,22 +5,24 @@ Questo è il file da eseguire per avviare il crawling.
 Scarica i dati da Moltbook in 3 fasi sequenziali:
 
     Fase 0 — Submolts
-        Recupera la lista di tutti i submolt disponibili (equivalenti
-        ai subreddit). Sono il punto di ingresso per esplorare i post.
+        Recupera la lista di tutti i submolt disponibili.
 
-    Fase 1 — Post
-        Per ogni submolt, pagina tutti i post disponibili (sort=new,
-        50 per pagina) fino all'esaurimento.
+    Fase 1 — Post (strategia: top post per submolt)
+        Per ogni submolt, scarica i TOP_POSTS_PER_SUBMOLT post ordinati
+        per commenti (sort=top). Scelta deliberata: i post più discussi
+        hanno più reply e quindi più archi nel grafo conversazionale.
+        'general' è escluso perché ha 1,4M post e distorcerebbe il campione.
 
     Fase 2 — Commenti
-        Per ogni post, scarica i commenti con tutti e 4 gli ordinamenti
-        (top, new, controversial, old) per massimizzare la copertura
-        fino a ~400 commenti unici per post.
-        Il campo parent_id di ogni commento genera gli archi del grafo.
+        Per ogni post con almeno MIN_COMMENTS_FOR_CRAWL commenti,
+        scarica i commenti con i 3 sort validi (best, new, old).
+        Il campo parent_id di ogni commento genera gli archi del grafo:
+            parent_id != null → arco diretto author → parent_author
 
     Fase 3 — Profili agenti
         Per ogni author_name incontrato nei commenti, scarica il profilo
-        completo dell'agente (karma, follower_count, is_claimed, owner...).
+        completo (karma, follower_count, is_claimed, owner...).
+        Questi dati diventano gli attributi dei nodi nel grafo.
 
 Meccanismi di robustezza:
     - Checkpoint: se il crawler si interrompe, alla ripresa salta post
@@ -28,7 +30,8 @@ Meccanismi di robustezza:
     - Rate limiting: pausa di 0.4s tra richieste + retry automatico.
     - Logging: tutto viene scritto su logs/crawler.log.
 
-NOTA: l'API è pubblica, nessuna autenticazione richiesta.
+NOTA: l'API è pubblica, nessuna autenticazione richiesta
+(confermato via DevTools: Access-Control-Allow-Origin: *).
 
 Esecuzione:
     cd moltbook-thesis
@@ -40,17 +43,27 @@ import logging
 import sys
 import os
 
-import requests  # pip install requests
+import requests
 
-# Aggiunge src/ al path in modo da poter importare config e db
 sys.path.insert(0, os.path.dirname(__file__))
-
 import config
 import db
 
 
+# ── Parametri strategia crawling ─────────────────────────────────────────────
+
+# Submolt da escludere: general ha 1,4M post, distorce il campione
+SUBMOLTS_DA_ESCLUDERE = {"general"}
+
+# Quanti post top prendere per ogni submolt
+TOP_POSTS_PER_SUBMOLT = 200
+
+# Scarica commenti solo per post con almeno N commenti
+# (post con 0 commenti non generano archi nel grafo)
+MIN_COMMENTS_FOR_CRAWL = 10
+
+
 # ── Configurazione logging ────────────────────────────────────────────────────
-# Scrive sia su file (logs/crawler.log) che su console
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -70,14 +83,12 @@ def get(endpoint: str, params: dict = None) -> dict | None:
     Esegue una richiesta GET all'API Moltbook con:
         - Pausa automatica (rate limiting) prima di ogni chiamata
         - Retry automatico in caso di errore di rete o 5xx
-        - Gestione del 429 (rate limit): attende il tempo indicato dall'API
+        - Gestione del 429: attende il tempo indicato dall'API
         - Restituzione di None in caso di 404 o fallimento definitivo
-
-    L'API è pubblica: nessun header di autenticazione necessario.
 
     Args:
         endpoint: percorso relativo, es. "/posts" o "/agents/profile"
-        params:   parametri query string, es. {"submolt": "general", "limit": 50}
+        params:   parametri query string, es. {"submolt": "agents", "limit": 50}
 
     Returns:
         Il JSON parsato come dict, oppure None se la richiesta fallisce.
@@ -86,21 +97,20 @@ def get(endpoint: str, params: dict = None) -> dict | None:
 
     for attempt in range(1, config.MAX_RETRIES + 1):
         try:
-            time.sleep(config.REQUEST_DELAY)  # rispetta il rate limit
-            resp = requests.get(url, params=params, timeout=15)  # no auth header
+            time.sleep(config.REQUEST_DELAY)
+            resp = requests.get(url, params=params, timeout=15)
 
             if resp.status_code == 200:
                 return resp.json()
 
             elif resp.status_code == 429:
-                # L'API ci dice quanto aspettare prima di riprovare
                 retry_after = resp.json().get("retryAfter", 60)
                 log.warning(f"Rate limit raggiunto — attendo {retry_after}s")
                 time.sleep(retry_after)
 
             elif resp.status_code == 404:
                 log.debug(f"404 Not Found: {url}")
-                return None  # risorsa non esistente, non riprovare
+                return None
 
             else:
                 log.warning(f"HTTP {resp.status_code} per {url} (tentativo {attempt}/{config.MAX_RETRIES})")
@@ -118,12 +128,12 @@ def get(endpoint: str, params: dict = None) -> dict | None:
 
 def fetch_submolts() -> list[str]:
     """
-    Scarica la lista di tutti i submolt disponibili sulla piattaforma.
-    I submolt sono il punto di ingresso per il crawling dei post.
+    Scarica la lista di tutti i submolt disponibili e li salva nel DB.
+    Restituisce solo i nomi dei submolt da crawlare (esclusi quelli in
+    SUBMOLTS_DA_ESCLUDERE).
 
     Returns:
-        Lista dei nomi dei submolt (es. ["general", "tech", "news"]).
-        Lista vuota se la chiamata fallisce.
+        Lista filtrata di nomi submolt da processare.
     """
     log.info("=== FASE 0: Fetch submolts ===")
     data = get("/submolts")
@@ -132,70 +142,82 @@ def fetch_submolts() -> list[str]:
         log.error("Impossibile recuperare i submolt.")
         return []
 
-    # L'API può restituire una lista diretta o un oggetto con chiave "submolts"
     submolts = data if isinstance(data, list) else data.get("submolts", [])
 
     names = []
     for s in submolts:
         db.upsert_submolt(s)
-        names.append(s.get("name"))
+        name = s.get("name")
+        if name not in SUBMOLTS_DA_ESCLUDERE:
+            names.append(name)
+        else:
+            log.info(f"  Submolt '{name}' escluso dalla strategia di crawling.")
 
-    log.info(f"Submolts trovati e salvati: {len(names)}")
+    log.info(f"Submolts da crawlare: {len(names)} (esclusi: {len(submolts) - len(names)})")
     return names
 
 
-# ── Fase 1: Post ──────────────────────────────────────────────────────────────
+# ── Fase 1: Post (top per submolt) ───────────────────────────────────────────
 
-def fetch_posts_for_submolt(submolt_name: str):
+def fetch_top_posts_for_submolt(submolt_name: str):
     """
-    Scarica tutti i post di un singolo submolt, paginando fino all'esaurimento.
-    Usa sort=new per garantire ordine cronologico e copertura completa.
-    Salta i post già presenti nel DB (checkpoint).
+    Scarica i TOP_POSTS_PER_SUBMOLT post più discussi di un submolt
+    usando sort=top. Strategia scelta per massimizzare gli archi del grafo:
+    i post più commentati hanno più reply e quindi più parent_id valorizzati.
+
+    Salta i post già presenti nel DB (checkpoint per ripresa).
 
     Args:
-        submolt_name: nome del submolt da esplorare (es. "general")
+        submolt_name: nome del submolt da esplorare
     """
-    offset    = 0
+    cursor    = None
     new_posts = 0
+    total_fetched = 0
 
-    while True:
-        data = get("/posts", params={
+    while total_fetched < TOP_POSTS_PER_SUBMOLT:
+        # Quanto manca al limite? Prendi al massimo quello che serve
+        remaining = TOP_POSTS_PER_SUBMOLT - total_fetched
+        limit = min(config.POSTS_PER_PAGE, remaining)
+
+        params = {
             "submolt": submolt_name,
-            "sort":    "new",
-            "limit":   config.POSTS_PER_PAGE,
-            "offset":  offset,
-        })
+            "sort":    "top",     # ordina per engagement, non per data
+            "limit":   limit,
+        }
+        if cursor:
+            params["cursor"] = cursor
 
+        data = get("/posts", params=params)
         if not data:
             break
 
         posts = data.get("posts", [])
         if not posts:
-            break  # pagina vuota: abbiamo finito
+            break
 
         for post in posts:
             if not db.post_exists(post["id"]):
                 db.insert_post(post)
                 new_posts += 1
+            total_fetched += 1
 
-        # has_more indica se esiste una pagina successiva
-        if not data.get("has_more", False):
+        cursor = data.get("next_cursor")
+        if not cursor or not data.get("has_more", False):
             break
-        offset += config.POSTS_PER_PAGE
 
-    log.info(f"  [{submolt_name}] Nuovi post salvati: {new_posts}")
+    log.info(f"  [{submolt_name}] Post scaricati: {total_fetched}, nuovi salvati: {new_posts}")
 
 
 def fetch_all_posts(submolt_names: list[str]):
     """
-    Chiama fetch_posts_for_submolt per ogni submolt nella lista.
+    Scarica i top post per ogni submolt nella lista.
 
     Args:
-        submolt_names: lista di nomi submolt restituita da fetch_submolts()
+        submolt_names: lista di nomi submolt da processare
     """
-    log.info("=== FASE 1: Fetch post ===")
+    log.info(f"=== FASE 1: Fetch top {TOP_POSTS_PER_SUBMOLT} post per {len(submolt_names)} submolt ===")
     for name in submolt_names:
-        fetch_posts_for_submolt(name)
+        fetch_top_posts_for_submolt(name)
 
 
 # ── Fase 2: Commenti ──────────────────────────────────────────────────────────
@@ -203,40 +225,45 @@ def fetch_all_posts(submolt_names: list[str]):
 def _flatten_comments(comments: list, result: list = None) -> list:
     """
     Appiattisce l'albero di commenti annidati in una lista piatta.
-    L'API restituisce le reply come campo "replies" annidato dentro
-    ogni commento — questa funzione li estrae tutti ricorsivamente.
+    L'API restituisce le reply nel campo "replies" annidato dentro ogni
+    commento — questa funzione li estrae tutti ricorsivamente.
+
+    Esempio struttura API:
+        commento A (depth=0)
+          └─ reply B (depth=1, parent_id=A) → arco B→A
+               └─ reply C (depth=2, parent_id=B) → arco C→B
 
     Args:
-        comments: lista di commenti (con eventuale campo "replies" annidato)
-        result:   lista accumulatore (usato nella ricorsione)
+        comments: lista di commenti top-level con eventuali "replies" annidate
+        result:   lista accumulatore (usato nella ricorsione interna)
 
     Returns:
-        Lista piatta di tutti i commenti e sub-commenti.
+        Lista piatta di tutti i commenti incluse le replies a qualsiasi profondità.
     """
     if result is None:
         result = []
     for c in comments:
         result.append(c)
         if c.get("replies"):
-            _flatten_comments(c["replies"], result)  # ricorsione sulle replies
+            _flatten_comments(c["replies"], result)
     return result
 
 
 def fetch_comments_for_post(post_id: str) -> set[str]:
     """
-    Scarica i commenti di un post usando tutti e 4 gli ordinamenti disponibili
-    per massimizzare il numero di commenti unici recuperati.
-    (L'API restituisce max 100 commenti per richiesta, ma con 4 ordinamenti
-    diversi si recuperano fino a ~400 commenti unici per post.)
+    Scarica i commenti di un post con i 3 sort validi (best, new, old)
+    per massimizzare il numero di commenti unici recuperati per post.
+    (L'API restituisce max 100 commenti top-level per richiesta, ma le
+    replies annidate vengono incluse nel JSON — quindi si recuperano molti più.)
 
-    Costruisce gli archi del grafo tramite parent_id:
+    Gli archi del grafo emergono qui:
         comment.parent_id != null → arco diretto author → parent_author
 
     Args:
-        post_id: UUID del post di cui scaricare i commenti
+        post_id: UUID del post
 
     Returns:
-        Insieme degli author_name incontrati in questo post.
+        Insieme degli author_name unici incontrati in questo post.
     """
     authors_seen = set()
 
@@ -245,7 +272,6 @@ def fetch_comments_for_post(post_id: str) -> set[str]:
         if not data:
             continue
 
-        # Normalizza: l'API può restituire lista diretta o oggetto con "comments"
         raw = data if isinstance(data, list) else data.get("comments", [])
         comments = _flatten_comments(raw)
 
@@ -253,7 +279,6 @@ def fetch_comments_for_post(post_id: str) -> set[str]:
             if not db.comment_exists(c["id"]):
                 db.insert_comment(c, post_id)
 
-            # Raccoglie autori per il fetch dei profili (fase 3)
             author_name = (c.get("author") or {}).get("name")
             if author_name:
                 authors_seen.add(author_name)
@@ -263,26 +288,30 @@ def fetch_comments_for_post(post_id: str) -> set[str]:
 
 def fetch_all_comments() -> set[str]:
     """
-    Scarica i commenti per tutti i post con comments_fetched = 0.
-    Meccanismo di checkpoint: se il crawler si interrompe, alla ripresa
-    elabora solo i post non ancora processati.
+    Scarica i commenti per tutti i post con:
+        - comments_fetched = 0 (non ancora processati)
+        - comment_count >= MIN_COMMENTS_FOR_CRAWL (hanno archi utili)
+
+    Il filtro su comment_count evita di sprecare richieste API su post
+    senza commenti, che non genererebbero nessun arco nel grafo.
 
     Returns:
-        Insieme di tutti gli author_name trovati nei commenti.
-        Sarà usato nella fase 3 per scaricare i profili agenti.
+        Insieme di tutti gli author_name trovati, per il fetch dei profili.
     """
     log.info("=== FASE 2: Fetch commenti ===")
-    post_ids = db.get_posts_without_comments()
-    log.info(f"Post da processare: {len(post_ids)}")
+
+    # Prendi solo post con abbastanza commenti da generare archi
+    post_ids = db.get_posts_without_comments(min_comments=MIN_COMMENTS_FOR_CRAWL)
+    log.info(f"Post da processare (>= {MIN_COMMENTS_FOR_CRAWL} commenti): {len(post_ids)}")
 
     all_authors = set()
     for i, post_id in enumerate(post_ids, 1):
         authors = fetch_comments_for_post(post_id)
         all_authors.update(authors)
-        db.mark_post_comments_fetched(post_id)  # segna come completato
+        db.mark_post_comments_fetched(post_id)
 
         if i % 50 == 0:
-            log.info(f"  Progresso: {i}/{len(post_ids)} post processati")
+            log.info(f"  Progresso: {i}/{len(post_ids)} post processati — autori unici finora: {len(all_authors)}")
 
     log.info(f"Autori unici trovati: {len(all_authors)}")
     return all_authors
@@ -293,18 +322,19 @@ def fetch_all_comments() -> set[str]:
 def fetch_agent_profiles(agent_names: set[str]):
     """
     Scarica il profilo completo di ogni agente trovato nei commenti.
-    Salta gli agenti già presenti nel DB (checkpoint).
+    Salta gli agenti già in DB (checkpoint).
 
-    Il profilo include: karma, follower_count, is_claimed, e — se claimed —
-    i dati pubblici del proprietario umano (x_handle, x_follower_count...).
-    Questi campi saranno gli attributi dei nodi nel grafo.
+    I campi recuperati diventano gli attributi dei nodi nel grafo:
+        - karma, follower_count, following_count → misure di influenza
+        - is_claimed → indica se l'agente è controllato da un umano
+        - owner.x_handle → identità del proprietario umano (se claimed)
+        - created_at, last_active → dimensione temporale
 
     Args:
         agent_names: insieme di nomi agente da scaricare
     """
     log.info("=== FASE 3: Fetch profili agenti ===")
 
-    # Filtra solo gli agenti non ancora in DB (checkpoint)
     to_fetch = [n for n in agent_names if not db.agent_exists(n)]
     log.info(f"Agenti da scaricare: {len(to_fetch)} (già in DB: {len(agent_names) - len(to_fetch)})")
 
@@ -323,17 +353,17 @@ def fetch_agent_profiles(agent_names: set[str]):
 
 def main():
     """
-    Punto di ingresso del crawler. Esegue le 4 fasi in sequenza:
-    submolts → post → commenti → profili agenti.
-    Al termine stampa le statistiche del database.
+    Punto di ingresso del crawler.
+    Esegue le 4 fasi in sequenza e stampa le statistiche finali.
+    Il checkpoint garantisce che una ripresa dopo interruzione
+    non perda dati e non rifaccia lavoro già fatto.
     """
     log.info("====== CRAWLER MOLTBOOK — AVVIO ======")
+    log.info(f"Strategia: top {TOP_POSTS_PER_SUBMOLT} post per submolt, esclusi: {SUBMOLTS_DA_ESCLUDERE}")
 
-    # Crea le cartelle e inizializza il database
     os.makedirs("data", exist_ok=True)
     db.init_db()
 
-    # Esegui la pipeline
     submolt_names = fetch_submolts()
     if not submolt_names:
         log.error("Nessun submolt trovato — impossibile procedere.")
@@ -343,7 +373,6 @@ def main():
     all_authors = fetch_all_comments()
     fetch_agent_profiles(all_authors)
 
-    # Resoconto finale
     log.info("====== CRAWLING COMPLETATO ======")
     db.print_stats()
 

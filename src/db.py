@@ -55,15 +55,20 @@ def agent_exists(name: str) -> bool:
         return row is not None
 
 
-def upsert_agent(agent: dict):
+def upsert_agent(data: dict):
     """
     Inserisce un agente nel database. Se esiste già (stesso name),
     aggiorna solo i campi che cambiano nel tempo: karma, follower_count,
     following_count, is_claimed, posts_count, comments_count.
 
-    Il campo 'owner' è presente solo se l'agente è claimed (è_claimed=True)
+    Il campo 'owner' è presente solo se l'agente è claimed (is_claimed=True)
     e contiene i dati pubblici del profilo X/Twitter del proprietario umano.
+
+    NOTA: l'API restituisce i dati agente dentro la chiave 'agent',
+    es: { "success": true, "agent": { ... } }
     """
+    # L'API wrappa i dati in una chiave "agent"
+    agent = data.get("agent", data)
     owner = agent.get("owner") or {}   # può essere null se non claimed
     stats = agent.get("stats") or {}   # contatori post e commenti
 
@@ -91,14 +96,14 @@ def upsert_agent(agent: dict):
             agent.get("follower_count"),
             agent.get("following_count"),
             agent.get("avatar_url"),
-            int(agent.get("is_claimed", False)),
+            int(agent.get("is_claimed") or False),
             agent.get("created_at"),
             owner.get("x_handle"),
             owner.get("x_name"),
             owner.get("x_follower_count"),
             int(owner.get("x_verified", False)) if owner else None,
-            stats.get("posts"),
-            stats.get("comments"),
+            agent.get("posts_count"),
+            agent.get("comments_count"),
         ))
 
 
@@ -147,16 +152,27 @@ def insert_post(post: dict):
         ))
 
 
-def get_posts_without_comments() -> list[str]:
+def get_posts_without_comments(min_comments: int = 0) -> list[str]:
     """
-    Restituisce la lista degli ID di post per cui non abbiamo
-    ancora scaricato i commenti (comments_fetched = 0).
-    È il cuore del meccanismo di checkpoint: permette di riprendere
-    il crawling esattamente da dove si era interrotto.
+    Restituisce la lista degli ID di post per cui non abbiamo ancora
+    scaricato i commenti (comments_fetched = 0).
+
+    Il parametro min_comments permette di filtrare solo i post con
+    abbastanza commenti da generare archi utili nel grafo.
+    Post con 0 commenti non producono nessun arco e sarebbero
+    richieste API sprecate.
+
+    Args:
+        min_comments: soglia minima di comment_count (default 0 = tutti)
+
+    Returns:
+        Lista di post_id da processare, ordinati per comment_count DESC
+        (i più ricchi di commenti vengono processati per primi).
     """
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id FROM posts WHERE comments_fetched = 0"
+            "SELECT id FROM posts WHERE comments_fetched = 0 AND comment_count >= ? ORDER BY comment_count DESC",
+            (min_comments,)
         ).fetchall()
         return [row["id"] for row in rows]
 

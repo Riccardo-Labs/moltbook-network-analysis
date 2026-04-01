@@ -26,9 +26,9 @@ RETRY_DELAY   = 5     # secondi di attesa prima di ogni retry
 # 50 è il massimo consentito dall'API per la lista post
 POSTS_PER_PAGE = 50
 
-# Richiedere tutti e 4 gli ordinamenti per ogni post permette di recuperare
-# fino a ~400 commenti unici per post (l'API ne restituisce max 100 per chiamata)
-COMMENT_SORT_ORDERS = ["top", "new", "controversial", "old"]
+# Sort validi confermati via API: best, new, old ("controversial" restituisce 400)
+# Richiedere tutti e 3 gli ordinamenti massimizza i commenti unici per post
+COMMENT_SORT_ORDERS = ["best", "new", "old"]
 
 # ── Percorsi file ─────────────────────────────────────────────────────────────
 DB_PATH  = "data/moltbook.db"   # database SQLite (creato automaticamente)
