@@ -260,6 +260,21 @@ def upsert_submolt(submolt: dict):
         ))
 
 
+# ── Autori ────────────────────────────────────────────────────────────────────
+
+def get_all_comment_authors() -> set[str]:
+    """
+    Restituisce tutti gli author_name unici presenti nella tabella comments.
+    Usato per ricostruire il set di autori dopo un'interruzione del crawler,
+    evitando di perdere i nomi raccolti in sessioni precedenti.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT author_name FROM comments WHERE author_name IS NOT NULL"
+        ).fetchall()
+        return {row["author_name"] for row in rows}
+
+
 # ── Statistiche ───────────────────────────────────────────────────────────────
 
 def print_stats():

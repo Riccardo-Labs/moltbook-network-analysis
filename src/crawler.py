@@ -7,11 +7,12 @@ Scarica i dati da Moltbook in 3 fasi sequenziali:
     Fase 0 — Submolts
         Recupera la lista di tutti i submolt disponibili.
 
-    Fase 1 — Post (strategia: top post per submolt)
-        Per ogni submolt, scarica i TOP_POSTS_PER_SUBMOLT post ordinati
-        per commenti (sort=top). Scelta deliberata: i post più discussi
-        hanno più reply e quindi più archi nel grafo conversazionale.
-        'general' è escluso perché ha 1,4M post e distorcerebbe il campione.
+    Fase 1 — Post (strategia: TUTTI i post per submolt)
+        Per ogni submolt, scarica TUTTI i post paginando fino a
+        has_more=False (sort=new → ordine cronologico inverso).
+        Checkpoint: i post già in DB vengono saltati.
+        'general' è escluso di default (1.4M post ≈ 3h solo di GET /posts);
+        imposta INCLUDE_GENERAL = True per includerlo.
 
     Fase 2 — Commenti
         Per ogni post con almeno MIN_COMMENTS_FOR_CRAWL commenti,
@@ -27,7 +28,9 @@ Scarica i dati da Moltbook in 3 fasi sequenziali:
 Meccanismi di robustezza:
     - Checkpoint: se il crawler si interrompe, alla ripresa salta post
       e agenti già scaricati (nessun dato perso).
-    - Rate limiting: pausa di 0.4s tra richieste + retry automatico.
+    - Rate limiting: pausa di REQUEST_DELAY secondi tra richieste.
+    - Backoff esponenziale: in caso di 429 o errore di rete il delay
+      raddoppia ad ogni tentativo (REQUEST_DELAY × 2^attempt).
     - Logging: tutto viene scritto su logs/crawler.log.
 
 NOTA: l'API è pubblica, nessuna autenticazione richiesta
@@ -52,15 +55,21 @@ import db
 
 # ── Parametri strategia crawling ─────────────────────────────────────────────
 
-# Submolt da escludere: general ha 1,4M post, distorce il campione
-SUBMOLTS_DA_ESCLUDERE = {"general"}
+# Includi il submolt 'general'?
+# True = incluso con cap MAX_POSTS_PER_SUBMOLT["general"] (100k post).
+INCLUDE_GENERAL = True
 
-# Quanti post top prendere per ogni submolt
-TOP_POSTS_PER_SUBMOLT = 200
+# Limite massimo di post per submolt (None = nessun limite).
+# 'general' ha 1.56M post: limitiamo ai primi 100k (sort=new).
+# Tutti gli altri submolt vengono paginati completamente.
+MAX_POSTS_PER_SUBMOLT = {
+    "general": 100_000,
+}
 
-# Scarica commenti solo per post con almeno N commenti
-# (post con 0 commenti non generano archi nel grafo)
-MIN_COMMENTS_FOR_CRAWL = 10
+# Scarica commenti per post con almeno N commenti.
+# 5 = buon compromesso: cattura la coda lunga senza sprecare richieste
+# su post quasi vuoti (1-4 commenti) che contribuiscono poco al grafo.
+MIN_COMMENTS_FOR_CRAWL = 5
 
 
 # ── Configurazione logging ────────────────────────────────────────────────────
@@ -82,8 +91,10 @@ def get(endpoint: str, params: dict = None) -> dict | None:
     """
     Esegue una richiesta GET all'API Moltbook con:
         - Pausa automatica (rate limiting) prima di ogni chiamata
-        - Retry automatico in caso di errore di rete o 5xx
-        - Gestione del 429: attende il tempo indicato dall'API
+        - Backoff esponenziale in caso di errore di rete o 5xx:
+          il delay raddoppia ad ogni tentativo (REQUEST_DELAY × 2^attempt)
+        - Gestione del 429: attende il tempo indicato dall'API,
+          poi applica backoff esponenziale aggiuntivo
         - Restituzione di None in caso di 404 o fallimento definitivo
 
     Args:
@@ -104,21 +115,31 @@ def get(endpoint: str, params: dict = None) -> dict | None:
                 return resp.json()
 
             elif resp.status_code == 429:
-                retry_after = resp.json().get("retryAfter", 60)
-                log.warning(f"Rate limit raggiunto — attendo {retry_after}s")
-                time.sleep(retry_after)
+                # L'API indica esplicitamente quanto aspettare
+                try:
+                    retry_after = resp.json().get("retryAfter", 60)
+                except Exception:
+                    retry_after = 60
+                backoff = retry_after * (2 ** (attempt - 1))
+                log.warning(f"Rate limit (429) — attendo {backoff}s (tentativo {attempt}/{config.MAX_RETRIES})")
+                time.sleep(backoff)
 
             elif resp.status_code == 404:
                 log.debug(f"404 Not Found: {url}")
                 return None
 
             else:
-                log.warning(f"HTTP {resp.status_code} per {url} (tentativo {attempt}/{config.MAX_RETRIES})")
-                time.sleep(config.RETRY_DELAY)
+                backoff = config.RETRY_DELAY * (2 ** (attempt - 1))
+                log.warning(
+                    f"HTTP {resp.status_code} per {url} "
+                    f"(tentativo {attempt}/{config.MAX_RETRIES}) — attendo {backoff}s"
+                )
+                time.sleep(backoff)
 
         except requests.RequestException as e:
-            log.error(f"Errore di rete: {e} (tentativo {attempt}/{config.MAX_RETRIES})")
-            time.sleep(config.RETRY_DELAY)
+            backoff = config.RETRY_DELAY * (2 ** (attempt - 1))
+            log.error(f"Errore di rete: {e} (tentativo {attempt}/{config.MAX_RETRIES}) — attendo {backoff}s")
+            time.sleep(backoff)
 
     log.error(f"Richiesta fallita definitivamente dopo {config.MAX_RETRIES} tentativi: {url}")
     return None
@@ -129,8 +150,7 @@ def get(endpoint: str, params: dict = None) -> dict | None:
 def fetch_submolts() -> list[str]:
     """
     Scarica la lista di tutti i submolt disponibili e li salva nel DB.
-    Restituisce solo i nomi dei submolt da crawlare (esclusi quelli in
-    SUBMOLTS_DA_ESCLUDERE).
+    Restituisce solo i nomi dei submolt da crawlare (rispettando INCLUDE_GENERAL).
 
     Returns:
         Lista filtrata di nomi submolt da processare.
@@ -148,40 +168,51 @@ def fetch_submolts() -> list[str]:
     for s in submolts:
         db.upsert_submolt(s)
         name = s.get("name")
-        if name not in SUBMOLTS_DA_ESCLUDERE:
-            names.append(name)
+        if name == "general" and not INCLUDE_GENERAL:
+            log.info(f"  Submolt 'general' escluso (INCLUDE_GENERAL=False).")
         else:
-            log.info(f"  Submolt '{name}' escluso dalla strategia di crawling.")
+            names.append(name)
 
-    log.info(f"Submolts da crawlare: {len(names)} (esclusi: {len(submolts) - len(names)})")
+    excluded = len(submolts) - len(names)
+    log.info(f"Submolts da crawlare: {len(names)} (esclusi: {excluded})")
     return names
 
 
-# ── Fase 1: Post (top per submolt) ───────────────────────────────────────────
+# ── Fase 1: Post (tutti per submolt) ─────────────────────────────────────────
 
-def fetch_top_posts_for_submolt(submolt_name: str):
+def fetch_all_posts_for_submolt(submolt_name: str):
     """
-    Scarica i TOP_POSTS_PER_SUBMOLT post più discussi di un submolt
-    usando sort=top. Strategia scelta per massimizzare gli archi del grafo:
-    i post più commentati hanno più reply e quindi più parent_id valorizzati.
+    Scarica i post di un submolt paginando fino a has_more=False.
+    Usa sort=new (ordine cronologico inverso).
 
-    Salta i post già presenti nel DB (checkpoint per ripresa).
+    Se il submolt è presente in MAX_POSTS_PER_SUBMOLT, si ferma al
+    raggiungimento del cap (es. 100k per 'general').
+    Per tutti gli altri submolt non c'è limite.
+
+    Checkpoint: i post già in DB vengono conteggiati ma non re-inseriti.
 
     Args:
         submolt_name: nome del submolt da esplorare
     """
-    cursor    = None
-    new_posts = 0
+    max_posts     = MAX_POSTS_PER_SUBMOLT.get(submolt_name)  # None = nessun limite
+    cursor        = None
+    new_posts     = 0
+    already_in_db = 0
+    pages         = 0
     total_fetched = 0
 
-    while total_fetched < TOP_POSTS_PER_SUBMOLT:
-        # Quanto manca al limite? Prendi al massimo quello che serve
-        remaining = TOP_POSTS_PER_SUBMOLT - total_fetched
+    while True:
+        # Rispetta il cap se definito
+        if max_posts is not None and total_fetched >= max_posts:
+            log.info(f"  [{submolt_name}] Cap di {max_posts:,} post raggiunto.")
+            break
+
+        remaining = (max_posts - total_fetched) if max_posts is not None else config.POSTS_PER_PAGE
         limit = min(config.POSTS_PER_PAGE, remaining)
 
         params = {
             "submolt": submolt_name,
-            "sort":    "top",     # ordina per engagement, non per data
+            "sort":    "new",
             "limit":   limit,
         }
         if cursor:
@@ -195,29 +226,43 @@ def fetch_top_posts_for_submolt(submolt_name: str):
         if not posts:
             break
 
+        pages += 1
         for post in posts:
             if not db.post_exists(post["id"]):
                 db.insert_post(post)
                 new_posts += 1
+            else:
+                already_in_db += 1
             total_fetched += 1
 
         cursor = data.get("next_cursor")
         if not cursor or not data.get("has_more", False):
             break
 
-    log.info(f"  [{submolt_name}] Post scaricati: {total_fetched}, nuovi salvati: {new_posts}")
+        # Log di avanzamento ogni 20 pagine (= 1000 post)
+        if pages % 20 == 0:
+            log.info(
+                f"  [{submolt_name}] Pagina {pages} — "
+                f"nuovi: {new_posts}, già in DB: {already_in_db}"
+            )
+
+    total = new_posts + already_in_db
+    log.info(
+        f"  [{submolt_name}] Completato: {total} post visti, "
+        f"{new_posts} nuovi, {already_in_db} già in DB ({pages} pagine)"
+    )
 
 
 def fetch_all_posts(submolt_names: list[str]):
     """
-    Scarica i top post per ogni submolt nella lista.
+    Scarica tutti i post per ogni submolt nella lista.
 
     Args:
         submolt_names: lista di nomi submolt da processare
     """
-    log.info(f"=== FASE 1: Fetch top {TOP_POSTS_PER_SUBMOLT} post per {len(submolt_names)} submolt ===")
+    log.info(f"=== FASE 1: Fetch TUTTI i post per {len(submolt_names)} submolt ===")
     for name in submolt_names:
-        fetch_top_posts_for_submolt(name)
+        fetch_all_posts_for_submolt(name)
 
 
 # ── Fase 2: Commenti ──────────────────────────────────────────────────────────
@@ -300,7 +345,6 @@ def fetch_all_comments() -> set[str]:
     """
     log.info("=== FASE 2: Fetch commenti ===")
 
-    # Prendi solo post con abbastanza commenti da generare archi
     post_ids = db.get_posts_without_comments(min_comments=MIN_COMMENTS_FOR_CRAWL)
     log.info(f"Post da processare (>= {MIN_COMMENTS_FOR_CRAWL} commenti): {len(post_ids)}")
 
@@ -311,7 +355,10 @@ def fetch_all_comments() -> set[str]:
         db.mark_post_comments_fetched(post_id)
 
         if i % 50 == 0:
-            log.info(f"  Progresso: {i}/{len(post_ids)} post processati — autori unici finora: {len(all_authors)}")
+            log.info(
+                f"  Progresso: {i}/{len(post_ids)} post processati "
+                f"— autori unici finora: {len(all_authors)}"
+            )
 
     log.info(f"Autori unici trovati: {len(all_authors)}")
     return all_authors
@@ -343,8 +390,9 @@ def fetch_agent_profiles(agent_names: set[str]):
         if data:
             db.upsert_agent(data)
 
-        if i % 100 == 0:
-            log.info(f"  Progresso: {i}/{len(to_fetch)} agenti processati")
+        if i % 200 == 0:
+            pct = i / len(to_fetch) * 100
+            log.info(f"  Progresso: {i}/{len(to_fetch)} agenti processati ({pct:.1f}%)")
 
     log.info("Fetch profili agenti completato.")
 
@@ -359,7 +407,7 @@ def main():
     non perda dati e non rifaccia lavoro già fatto.
     """
     log.info("====== CRAWLER MOLTBOOK — AVVIO ======")
-    log.info(f"Strategia: top {TOP_POSTS_PER_SUBMOLT} post per submolt, esclusi: {SUBMOLTS_DA_ESCLUDERE}")
+    log.info(f"Strategia: TUTTI i post per submolt — general={'incluso' if INCLUDE_GENERAL else 'escluso'}")
 
     os.makedirs("data", exist_ok=True)
     db.init_db()
@@ -370,7 +418,13 @@ def main():
         sys.exit(1)
 
     fetch_all_posts(submolt_names)
-    all_authors = fetch_all_comments()
+    session_authors = fetch_all_comments()
+
+    # Unisce gli autori trovati in questa sessione con quelli già in DB
+    # dai commenti di sessioni precedenti (robustezza al crash).
+    all_authors = db.get_all_comment_authors()
+    log.info(f"Autori totali da commenti in DB (incluse sessioni precedenti): {len(all_authors)}")
+
     fetch_agent_profiles(all_authors)
 
     log.info("====== CRAWLING COMPLETATO ======")
