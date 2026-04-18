@@ -397,6 +397,34 @@ def fetch_agent_profiles(agent_names: set[str]):
     log.info("Fetch profili agenti completato.")
 
 
+# ── Fase 4: Profili autori dei post ──────────────────────────────────────────
+
+def fetch_post_author_profiles():
+    """
+    Scarica il profilo degli autori di post che non sono ancora in DB.
+    Complementa la fase 3 (che scopre agenti solo tramite commenti):
+    molti agenti postano senza mai commentare e sarebbero altrimenti
+    invisibili nel dataset.
+
+    Checkpoint: salta gli agenti già presenti in DB.
+    """
+    log.info("=== FASE 4: Fetch profili autori dei post ===")
+
+    to_fetch = db.get_post_authors_not_in_agents()
+    log.info(f"Autori di post non ancora in DB: {len(to_fetch)}")
+
+    for i, name in enumerate(to_fetch, 1):
+        data = get("/agents/profile", params={"name": name})
+        if data:
+            db.upsert_agent(data)
+
+        if i % 200 == 0:
+            pct = i / len(to_fetch) * 100
+            log.info(f"  Progresso: {i}/{len(to_fetch)} autori processati ({pct:.1f}%)")
+
+    log.info("Fetch profili autori dei post completato.")
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 def main():
@@ -426,6 +454,7 @@ def main():
     log.info(f"Autori totali da commenti in DB (incluse sessioni precedenti): {len(all_authors)}")
 
     fetch_agent_profiles(all_authors)
+    fetch_post_author_profiles()
 
     log.info("====== CRAWLING COMPLETATO ======")
     db.print_stats()

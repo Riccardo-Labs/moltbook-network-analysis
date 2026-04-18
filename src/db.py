@@ -262,6 +262,23 @@ def upsert_submolt(submolt: dict):
 
 # ── Autori ────────────────────────────────────────────────────────────────────
 
+def get_post_authors_not_in_agents() -> list[str]:
+    """
+    Restituisce i nomi degli autori di post che non hanno ancora
+    un profilo nella tabella agents. Usato dalla fase 4 del crawler
+    per fetchare i profili degli autori scoperti tramite i post
+    (non solo tramite i commenti).
+    """
+    with get_connection() as conn:
+        rows = conn.execute("""
+            SELECT DISTINCT p.author_name
+            FROM posts p
+            WHERE p.author_name IS NOT NULL
+              AND p.author_name NOT IN (SELECT name FROM agents)
+        """).fetchall()
+        return [row["author_name"] for row in rows]
+
+
 def get_all_comment_authors() -> set[str]:
     """
     Restituisce tutti gli author_name unici presenti nella tabella comments.
