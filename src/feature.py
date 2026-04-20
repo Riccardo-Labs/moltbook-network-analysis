@@ -121,7 +121,7 @@ def compute_agent_features(agent_name: str):
 
         # ── Feature comportamentali ───────────────────────────────────────
         # Reply-to-post ratio
-        reply_to_post_ratio = n_comments / n_posts if n_posts > 0 else None
+        reply_to_post_ratio = n_comments / (n_posts + n_comments) if (n_posts + n_comments) > 0 else None
 
         # Self-reply rate: quanti dei propri commenti sono risposte a se stesso
         self_replies = conn.execute("""
