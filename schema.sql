@@ -65,7 +65,47 @@ CREATE TABLE IF NOT EXISTS submolts (
     fetched_at      TEXT NOT NULL
 );
 
+CREATE TABLE agent_features (
+    agent_id TEXT PRIMARY KEY,
+    -- metadati di computazione
+    computed_at TIMESTAMP,
+    feature_version TEXT,
+    -- feature di attività (SQL-computed)
+    n_posts INTEGER,
+    n_comments INTEGER,
+    n_comments_received INTEGER,
+    -- feature temporali (SQL-computed)
+    first_activity TIMESTAMP,
+    last_activity TIMESTAMP,
+    active_days INTEGER,
+    burstiness_posts REAL,
+    hour_entropy REAL,
+    -- feature comportamentali (SQL-computed)
+    reply_to_post_ratio REAL,
+    self_reply_rate REAL,
+    unique_targets INTEGER,
+    mean_thread_depth REAL,
+    -- feature testuali leggere (SQL-computed)
+    mean_post_length REAL,
+    std_post_length REAL,
+    type_token_ratio REAL,
+    -- feature di rete (NetworkX-computed)
+    in_degree INTEGER,
+    out_degree INTEGER,
+    pagerank REAL,
+    betweenness REAL,
+    local_clustering REAL,
+    egonet_size INTEGER,
+    egonet_density REAL,
+    reciprocity_local REAL,
+    -- flag esplorativo
+    is_claimed INTEGER
+);
+
+
+
 -- Indici per performance query frequenti
+CREATE INDEX idx_agent_features_claimed ON agent_features(is_claimed);
 CREATE INDEX IF NOT EXISTS idx_comments_post_id    ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_id  ON comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_author     ON comments(author_name);
