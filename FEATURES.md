@@ -32,7 +32,7 @@ Documentazione della feature matrix prodotta per la fase di analisi (clustering,
 
 | Feature | Definizione | Trasformazione | Policy NaN |
 |---|---|---|---|
-| `reply_to_post_ratio` | `n_comments / (n_posts + n_comments)`; range [0, 1] | `log1p` | fillna(0) — NaN se n_posts=0 e n_comments=0 |
+| `reply_to_post_ratio` | `n_comments / (n_posts + n_comments)`; range [0, 1] | nessuna (già bounded) | fillna(0) — NaN se n_posts=0 e n_comments=0 |
 | `self_reply_rate` | Frazione dei propri commenti che sono risposte a se stesso; range [0, 1] | nessuna (già bounded) | fillna(0) — NaN se nessun commento con parent_id |
 | `mean_thread_depth` | Profondità media dei thread in cui l'agente ha commentato | nessuna | fillna(0) — NaN se depth NULL nel DB |
 
@@ -40,8 +40,8 @@ Documentazione della feature matrix prodotta per la fase di analisi (clustering,
 
 | Feature | Definizione | Trasformazione | Policy NaN |
 |---|---|---|---|
-| `mean_post_length` | Lunghezza media (caratteri) dei post | nessuna | fillna(0) — NaN se n_posts=0 |
-| `std_post_length` | Deviazione standard della lunghezza dei post | nessuna | fillna(0) — NaN se n_posts=0 |
+| `mean_post_length` | Lunghezza media (caratteri) dei post | `log1p` | fillna(0) — NaN se n_posts=0 |
+| `std_post_length` | Deviazione standard della lunghezza dei post | `log1p` | fillna(0) — NaN se n_posts=0 |
 | `type_token_ratio` | Parole uniche / totale parole su post+commenti; range [0, 1] | nessuna (già bounded) | fillna(0) — NaN se nessun testo |
 
 ### Rete (NetworkX sul grafo diretto, senza self-loop)
@@ -50,8 +50,8 @@ Documentazione della feature matrix prodotta per la fase di analisi (clustering,
 |---|---|---|---|
 | `in_degree` | Numero di agenti diversi che hanno risposto all'agente | `log1p` | — (tutti gli agenti nel subset hanno in_degree valorizzato) |
 | `out_degree` | Numero di agenti diversi a cui l'agente ha risposto | `log1p` | — |
-| `pagerank` | PageRank sul grafo diretto | `log1p` | — |
-| `betweenness` | Betweenness centrality normalizzata | `log1p` | — |
+| `pagerank` | PageRank sul grafo diretto | `log10` (epsilon=1e-6) | — |
+| `betweenness` | Betweenness centrality normalizzata | `log10` (epsilon=1e-6) | — |
 | `local_clustering` | Coefficiente di clustering locale; range [0, 1] | nessuna (già bounded) | — |
 | `egonet_density` | Densità del sottografo ego (vicini diretti + nodo); range [0, 1] | nessuna (già bounded) | — |
 | `reciprocity_local` | Frazione di archi uscenti reciprocati; range [0, 1] | nessuna (già bounded) | — |
@@ -77,6 +77,8 @@ Documentazione della feature matrix prodotta per la fase di analisi (clustering,
 1. Anche dopo `log1p`, alcune feature (es. `betweenness`, `pagerank`) hanno code pesanti con outlier estremi
 2. Media e deviazione standard di queste distribuzioni sono fortemente influenzate dagli hub del grafo
 3. Con RobustScaler la maggior parte degli agenti "normali" mantiene valori nell'ordine di grandezza [-1, 3], mentre gli outlier non distorcono la scala
+
+La distribuzione post-scaling presenta valori massimi fino a ~13 per `betweenness` e `burstiness_posts`. Questi valori non sono outlier spuri ma riflettono la natura power-law della rete (pochi hub con centralità estrema) e la sparsità della misura di burstiness (calcolabile solo su agenti con ≥3 post, ~44% del subset). Nessun clipping è stato applicato per preservare il segnale strutturale di agenti con profili eccezionali, coerentemente con l'obiettivo di rilevare pattern di coordinamento.
 
 ---
 
