@@ -6,8 +6,6 @@
 
 | | |
 |---|---|
-| **Studente** | Riccardo — Informatica per la Comunicazione Digitale, Università degli Studi di Milano |
-| **Supervisore** | Prof. Matteo Zignani |
 | **Scadenza** | Luglio 2026 |
 | **Versione documento** | v2.0 — Aprile 2026 (aggiornata allo stato reale del progetto) |
 | **Scopo** | Documento guida operativo: fissa ciò che non cambia, lascia flessibile ciò che evolve con i risultati. |
@@ -149,9 +147,6 @@ Struttura a 8 capitoli. Titoli fissati; contenuto dettagliato evolve con i risul
 | **Fine giugno 2026** | Scrittura Capitoli 1, 2, 7, 8. Revisione capitoli precedenti. Sistemazione Appendici. |
 | **Luglio 2026** | Revisione finale con supervisore, impaginazione, consegna. |
 
-### Frequenza di sincronizzazione con il supervisore
-
-Un meeting ogni 3-4 settimane, preparato: un risultato chiave, una decisione da validare, un blocco corrente. Durata target 20-30 minuti.
 
 ---
 
@@ -197,4 +192,4 @@ Questo documento è pensato come **documento vivo**. Gli elementi fissati (§2 R
 
 ---
 
-*v2.0 — Aprile 2026 | Riccardo — Università degli Studi di Milano | Supervisore: Prof. Matteo Zignani*
+*v2.0 — Aprile 2026 | Riccardo — Università degli Studi di Milano*

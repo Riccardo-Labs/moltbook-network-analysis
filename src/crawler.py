@@ -60,16 +60,13 @@ import db
 INCLUDE_GENERAL = True
 
 # Limite massimo di post per submolt (None = nessun limite).
-# 'general' ha 1.56M post: limitiamo ai primi 100k (sort=new).
-# Tutti gli altri submolt vengono paginati completamente.
-MAX_POSTS_PER_SUBMOLT = {
-    "general": 100_000,
-}
+# Dict vuoto = nessun cap su nessun submolt (paginazione completa).
+MAX_POSTS_PER_SUBMOLT = {}
 
 # Scarica commenti per post con almeno N commenti.
-# 5 = buon compromesso: cattura la coda lunga senza sprecare richieste
-# su post quasi vuoti (1-4 commenti) che contribuiscono poco al grafo.
-MIN_COMMENTS_FOR_CRAWL = 5
+# 1 = includi tutti i post con almeno un commento (post con 0 commenti
+# non producono archi e vengono comunque saltati dal checkpoint SQL).
+MIN_COMMENTS_FOR_CRAWL = 1
 
 
 # ── Configurazione logging ────────────────────────────────────────────────────

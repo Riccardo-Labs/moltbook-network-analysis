@@ -47,7 +47,7 @@ src/feature.py      ← calcola le feature SQL-based per ogni agente e le inseri
 **4-phase crawler pipeline in `crawler.py`:**
 1. **Phase 0** — Fetch all submolts (communities)
 2. **Phase 1** — Paginate all posts per submolt
-3. **Phase 2** — Fetch comments for posts with ≥ `MIN_COMMENTS_FOR_CRAWL` (=5); each post queried 3 times (sort=best/new/old) to maximize unique comments discovered
+3. **Phase 2** — Fetch comments for posts with ≥ `MIN_COMMENTS_FOR_CRAWL` (=1); each post queried 3 times (sort=best/new/old) to maximize unique comments discovered
 4. **Phase 3/4** — Fetch agent profiles for all authors discovered via comments and posts
 
 **Graph edges** come from `comments.parent_id`: when a comment has a non-null `parent_id`, the comment author replied to the parent comment's author, creating a directed edge.
@@ -68,7 +68,7 @@ All DB operations go through `db.py` — never write raw SQL in crawler or noteb
 - `REQUEST_DELAY = 0.4s` — keeps requests under API limit (~150/min vs ~200/min allowed)
 - `POSTS_PER_PAGE = 50` — API maximum
 - `COMMENT_SORT_ORDERS = ["best", "new", "old"]` — 3 passes per post to maximize edge discovery
-- `INCLUDE_GENERAL = True` in crawler.py — whether to include the high-volume "general" submolt (1.56M posts, capped at 100k)
+- `INCLUDE_GENERAL = True` in crawler.py — whether to include the high-volume "general" submolt (1.56M posts, nessun cap — paginazione completa)
 
 ## agent_features — Pipeline di popolamento
 
@@ -106,7 +106,7 @@ Dopo `agent_features`, la feature matrix pronta per ML è costruita in 3 noteboo
 
 - Agenti: ~27.107 | Post: ~311.448 | Commenti: ~794.814 | Archi: ~191.671 (senza self-loop)
 - Agenti nel grafo conversazionale (con almeno un arco): ~9.096
-- Agenti fuori dal grafo: ~18.011 (solo post top-level o sotto soglia MIN_COMMENTS=5)
+- Agenti fuori dal grafo: ~18.011 (solo post top-level o sotto soglia MIN_COMMENTS=1) — dataset pre-espansione (maggio 2026)
 - Claimed: ~26.738 / 27.107 — il 98.9% è claimed
 - Self-loop rimossi: ~3.585 (1.9% degli archi) — agenti che rispondono a se stessi
 
@@ -117,7 +117,7 @@ Queste non vanno rimesse in discussione senza motivo tecnico nuovo:
 - `is_claimed` è variabile **esplorativa**, NON target di classificazione (imbalance + ambiguità semantica)
 - Self-loop rimossi dal grafo strutturale
 - Subset analitico = 9.096 agenti nel grafo conversazionale
-- `MIN_COMMENTS_FOR_CRAWL = 5` — post con meno commenti non generano thread multi-livello
+- `MIN_COMMENTS_FOR_CRAWL = 1` — abbassato da 5 a 1 su indicazione del relatore per ampliare il dataset; post con 0 commenti restano esclusi (nessun arco possibile)
 - RobustScaler senza clipping — outlier preservati perché sono segnale (hub del grafo)
 - `unique_targets` ed `egonet_size` esclusi dalla ML matrix per ridondanza
 - SQLite sufficiente, no migrazione a PostgreSQL
