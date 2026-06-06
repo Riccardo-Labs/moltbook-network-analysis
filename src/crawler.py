@@ -66,7 +66,7 @@ MAX_POSTS_PER_SUBMOLT = {}
 # Scarica commenti per post con almeno N commenti.
 # 1 = includi tutti i post con almeno un commento (post con 0 commenti
 # non producono archi e vengono comunque saltati dal checkpoint SQL).
-MIN_COMMENTS_FOR_CRAWL = 1
+MIN_COMMENTS_FOR_CRAWL = 3
 
 
 # ── Configurazione logging ────────────────────────────────────────────────────

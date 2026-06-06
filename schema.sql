@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS submolts (
     fetched_at      TEXT NOT NULL
 );
 
-CREATE TABLE agent_features (
+CREATE TABLE IF NOT EXISTS agent_features (
     agent_id TEXT PRIMARY KEY,
     -- metadati di computazione
     computed_at TIMESTAMP,
@@ -105,7 +105,7 @@ CREATE TABLE agent_features (
 
 
 -- Indici per performance query frequenti
-CREATE INDEX idx_agent_features_claimed ON agent_features(is_claimed);
+CREATE INDEX IF NOT EXISTS idx_agent_features_claimed ON agent_features(is_claimed);
 CREATE INDEX IF NOT EXISTS idx_comments_post_id    ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent_id  ON comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_author     ON comments(author_name);
