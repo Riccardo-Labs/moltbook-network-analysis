@@ -4,237 +4,323 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a thesis project that crawls the Moltbook public API to reconstruct a **conversational graph of AI agents**. The key insight: since Moltbook has no follower/following API, edges are inferred from comment reply threads — if agent A replies to agent B's comment, an edge A→B is recorded.
+Thesis project crawling Moltbook (moltbook.com), a social platform per agenti AI, per ricostruire un **grafo conversazionale** degli agenti e cercare evidenza di coordinamento comportamentale.
 
-**Research question (fissata):** esistono gruppi di agenti AI che condividono pattern strutturali, temporali e comportamentali sufficientemente simili da suggerire coordinamento?
+**Research question:** esistono gruppi di agenti AI che condividono pattern strutturali, temporali e comportamentali sufficientemente simili da suggerire coordinamento?
 
-Per framing completo, RQ dettagliate, criterio di successo e indice tesi: vedi `docs/thesis_plan.md`.
+**Stato:** analisi completata (giugno 2026). Fase attiva: scrittura tesi.
+
 Per dettaglio feature e policy di preprocessing: vedi `docs/FEATURES.md`.
+
+---
 
 ## Running the Code
 
 ```bash
-# Activate virtual environment
 source venv/Scripts/activate  # Windows (bash)
-
-# Run the full crawler pipeline
-python src/crawler.py
-
-# Run feature extraction (SQL-based features)
-python src/feature.py
-
-# Launch Jupyter for analysis notebooks
-jupyter notebook
+python src/crawler.py          # pipeline crawling
+python src/feature.py          # feature extraction SQL
+jupyter notebook               # analisi
 ```
 
-The crawler is **resumable** — it uses checkpoint queries to skip already-fetched data, so it can be safely interrupted and restarted.
+Il crawler è **resumable** — usa checkpoint queries, può essere interrotto e riavviato.
+
+---
 
 ## Architecture
 
 ```
 crawler.py (main pipeline)
-├── config.py       ← all tunable parameters (rate limits, paths, thresholds)
-├── db.py           ← all SQLite operations (no raw SQL in crawler.py)
-└── Moltbook API    ← https://www.moltbook.com/api/v1 (public, no auth)
+├── config.py       ← parametri tunable (rate limits, paths, soglie)
+├── db.py           ← tutte le operazioni SQLite (no raw SQL fuori da qui)
+└── Moltbook API    ← public, no auth
         ↓
-data/moltbook.db    ← SQLite (fully populated)
+data/moltbook.db    ← SQLite (dataset definitivo)
 
-src/feature.py      ← calcola le feature SQL-based per ogni agente e le inserisce
-                       in agent_features. Lancia da moltbook-thesis/ con:
-                       python src/feature.py
+src/feature.py      ← feature SQL-based → agent_features
+notebooks/          ← analisi ML e grafici
 ```
 
-**4-phase crawler pipeline in `crawler.py`:**
-1. **Phase 0** — Fetch all submolts (communities)
-2. **Phase 1** — Paginate all posts per submolt
-3. **Phase 2** — Fetch comments for posts with ≥ `MIN_COMMENTS_FOR_CRAWL` (=3); each post queried 3 times (sort=best/new/old) to maximize unique comments discovered
-4. **Phase 3/4** — Fetch agent profiles for all authors discovered via comments and posts
+**Pipeline crawler 4 fasi:**
+1. Phase 0 — Fetch tutti i submolt (community)
+2. Phase 1 — Pagina tutti i post per submolt
+3. Phase 2 — Fetch commenti per post con ≥ `MIN_COMMENTS_FOR_CRAWL` (=3); ogni post 3 volte (sort=best/new/old)
+4. Phase 3/4 — Fetch profili agenti per tutti gli autori scoperti
 
-**Graph edges** come from `comments.parent_id`: when a comment has a non-null `parent_id`, the comment author replied to the parent comment's author, creating a directed edge.
+**Archi del grafo** da `comments.parent_id`: se A risponde al commento di B → arco A→B.
+
+---
 
 ## Database Schema
 
-5 tables in `schema.sql`:
-- **agents** — AI agent profiles (nodes), upserted on refetch to capture karma/follower changes
-- **posts** — Content with `comments_fetched` flag (0/1) used as checkpoint
-- **comments** — `parent_id` is NULL for top-level posts, UUID for replies (the edge source)
-- **submolts** — Community metadata
-- **agent_features** — feature tabella per ML, popolata in due fasi (vedi sotto)
+5 tabelle in `schema.sql`:
+- **agents** — profili agenti (nodi). `id` = UUID API. `name` = username univoco. Upserted su refetch.
+- **posts** — contenuto con flag `comments_fetched` (0/1) come checkpoint
+- **comments** — `parent_id` NULL per top-level, UUID per risposte (fonte degli archi)
+- **submolts** — metadati community
+- **agent_features** — feature ML, popolata in due fasi
 
-All DB operations go through `db.py` — never write raw SQL in crawler or notebooks.
+**IMPORTANTE:** `agents.id` (UUID) ≠ `agents.name` (username). Il grafo usa `name` come nodo. La feature matrix usa `id` come `agent_id`. Il join richiede `SELECT id, name FROM agents`.
 
-## Key Configuration (`src/config.py`)
+---
 
-- `REQUEST_DELAY = 0.4s` — keeps requests under API limit (~150/min vs ~200/min allowed)
-- `POSTS_PER_PAGE = 50` — API maximum
-- `COMMENT_SORT_ORDERS = ["best", "new", "old"]` — 3 passes per post to maximize edge discovery
-- `INCLUDE_GENERAL = True` in crawler.py — whether to include the high-volume "general" submolt (1.56M posts, nessun cap — paginazione completa)
+## Pipeline Feature Engineering
 
-## agent_features — Pipeline di popolamento
+### Fase 1 — Feature SQL (`src/feature.py`)
+n_posts, n_comments, n_comments_received, active_days, burstiness_posts, hour_entropy,
+reply_to_post_ratio, self_reply_rate, unique_targets, mean_thread_depth,
+mean_post_length, std_post_length, type_token_ratio, is_claimed
 
-La tabella si popola in due fasi distinte:
+`reply_to_post_ratio = n_comments / (n_posts + n_comments)` → bounded [0,1]
 
-**Fase 1 — Feature SQL** (`src/feature.py`):
-- Calcola per ogni agente: n_posts, n_comments, n_comments_received, active_days, burstiness_posts, hour_entropy, reply_to_post_ratio, self_reply_rate, unique_targets, mean_thread_depth, mean_post_length, std_post_length, type_token_ratio, is_claimed
-- `reply_to_post_ratio` è definita come `n_comments / (n_posts + n_comments)` → bounded [0,1]
-- Lancia con: `python src/feature.py` dalla root del progetto
+### Fase 2 — Feature di rete (`notebooks/02_...`)
+in_degree, out_degree, pagerank, betweenness, local_clustering, egonet_size, egonet_density, reciprocity_local
 
-**Fase 2 — Feature di rete** (`notebooks/02_popolazione_table_agent_feature.ipynb`):
-- Costruisce il grafo NetworkX **senza self-loop** (filtro `AND c.author_name != p.author_name` nella query)
-- Calcola: in_degree, out_degree, pagerank, betweenness, local_clustering, egonet_size, egonet_density, reciprocity_local
-- Fa UPDATE sulle righe già esistenti in agent_features
-- **IMPORTANTE**: i self-loop vanno esclusi — su grafi diretti causano egonet_density > 1.0
+Grafo costruito **senza self-loop** (`AND c.author_name != p.author_name`).
+Self-loop rimossi perché causano egonet_density > 1.0 su grafi diretti.
 
-## Feature matrix — Pipeline di preprocessing
+### Fase 3 — Feature matrix (`notebooks/04a/b/c`)
+- `04a` — verifica NaN strutturali
+- `04b` — filtro subset grafo, fillna(0), trasformazioni log, → `feature_matrix_graph_v1.parquet`
+- `04c` — RobustScaler → `feature_matrix_scaled_v1.parquet` + `scaler_v1.joblib`
 
-Dopo `agent_features`, la feature matrix pronta per ML è costruita in 3 notebook:
-
-- `04a_nan_investigation.ipynb` — verifica che tutti i NaN siano strutturali (zero bug)
-- `04b_feature_matrix.ipynb` — filtro subset grafo, fillna(0), log1p/log10 transform, produce `data/feature_matrix_graph_v1.parquet`
-- `04c_scaling.ipynb` — RobustScaler, produce `data/feature_matrix_scaled_v1.parquet` + `data/scaler_v1.joblib`
-
-**Feature escluse dalla ML matrix** (documentato in `FEATURES.md`):
+**Feature escluse dalla ML matrix:**
 - `unique_targets`, `egonet_size` → correlazione > 0.9999 con `out_degree`
-- `is_claimed` → sbilanciamento 98.6%, usata solo come variabile esplorativa a valle
+- `is_claimed` → sbilanciamento 98.6%, usata solo esplorativa a valle
 
-**Trasformazioni applicate:**
+**Trasformazioni:**
 - `log1p`: n_posts, n_comments, n_comments_received, in_degree, out_degree, mean_post_length, std_post_length
 - `log10` (con epsilon 1e-8): pagerank, betweenness
-- Nessuna trasformazione: feature già bounded in [0,1] o [-1,1]
 
-## Dataset — Stato attuale (giugno 2026) — DEFINITIVO
+---
 
-- Agenti: ~27.107 | Post: ~311.448 | Commenti: ~794.814 | Archi: ~191.671 (senza self-loop)
-- Agenti nel grafo conversazionale (con almeno un arco): ~9.096
-- Agenti fuori dal grafo: ~18.011 (solo post top-level o sotto soglia MIN_COMMENTS=3)
-- Claimed: ~26.738 / 27.107 — il 98.9% è claimed
-- Self-loop rimossi: ~3.585 (1.9% degli archi) — agenti che rispondono a se stessi
+## Dataset — DEFINITIVO (giugno 2026)
 
-**LIMITE STRUTTURALE API (documentare in Cap 3):** Dopo ampliamento crawler (maggio 2026), confermato
-che il dataset è al massimo raggiungibile. La piattaforma Moltbook impone limiti strutturali che
-impediscono di recuperare dati aggiuntivi oltre quelli già presenti. Specificatamente:
-- MAX ~300 commenti distinti per post (3 sort × ~100) — cap hard dell'API pubblica
-- Tutti i submolt sono stati paginati integralmente; nessuna fonte di post non ancora crawlata
-- Il dataset attuale rappresenta la copertura massima ottenibile dall'API pubblica senza auth
-Questo va dichiarato come limite metodologico nel Cap 3, quantificando i post con >300 commenti
-come stima della frazione di archi non catturati.
+- Agenti: ~27.107 | Post: ~311.448 | Commenti: ~794.814
+- Archi (senza self-loop): ~191.671 | Self-loop rimossi: ~3.585 (1.9%)
+- Agenti nel grafo conversazionale (≥1 arco): **9.096** — subset analitico
+- Claimed: 98.9%
 
-## RQ2 — Risultati clustering (giugno 2026, v2)
+**LIMITE STRUTTURALE API:** dataset al massimo raggiungibile. Cap hard: ~300 commenti distinti per post (3 sort × ~100). Tutti i submolt già paginati integralmente. Documentare in Cap 3 come limite metodologico, quantificando i post con >300 commenti.
 
-**Scelta metodologica:** escluse 4 feature di volume puro (`n_posts`, `n_comments`,
-`n_comments_received`, `active_days`) dal clustering. Motivazione: volume misura *quanto*
-è attivo un agente, non *come* si comporta. Con volume incluso (v1) k-means produceva
-un cluster dominante al 64.5% ("inattivi") che oscurava le differenze comportamentali.
-Usate 15/19 feature comportamentali. k=15 selezionato automaticamente (silhouette max con k≥8).
+---
 
-- k=15 cluster | silhouette=0.266 | ARI inter-seed=0.960
-- Distribuzione bilanciata: max C4=25.8% (2346 agenti), min C8=1.9% (172 agenti)
-- Louvain union k-NN (k=10): Q=0.887, n_community alta — struttura comunitaria confermata
+## Iter Metodologico — Decisioni Adottate
 
-## RQ3 — Risultati cross-validation (giugno 2026)
+### Clustering (RQ2) — iter v1 → v2
 
-- **Criterio Jaccard ≥ 0.3 su ≥ 3 cluster: non soddisfatto formalmente** (0/15)
-- Motivazione della difficoltà: con cluster piccoli (173-2346) e K fisso, il Jaccard
-  massimo raggiungibile per cluster <500 agenti è geometricamente limitato
-- **Lift max OddBall: 4.53x** (C12) rispetto al baseline random
-- **Lift max IsolationForest: 21.13x** (C0, C10) — C0 e C10 concentrano il 50%+
-  delle top-500 anomalie pur rappresentando solo 2-3% del totale agenti
-- NMI IsolationForest K=500: 0.0595
+**v1 (fallito):** mutual k-NN su tutte le 19 feature → 1139 cluster, mediana size=1.
+Root cause: mutual k-NN troppo restrittivo su feature heavy-tailed → 1085 componenti isolate.
+**Fix:** switch a k-means.
 
-**Cluster più anomali per metodo:**
-- OddBall: C12 (n=518), C6 (n=659), C13 (n=1499)
-- IsolationForest: C0 (n=213, lift 21x), C10 (n=253, lift 21x), C3 (n=392)
+**v1 k-means (inadeguato):** k-means con tutte le 19 feature, k=5 → C0 dominante al 64.5% ("inattivi").
+Root cause: le 4 feature di volume (n_posts, n_comments, n_comments_received, active_days) catturavano solo l'attività quantitativa, non il comportamento.
+**Fix:** escluse feature di volume, forzato k≥8.
 
-## Decisioni metodologiche fissate
+**v2 definitivo:** k-means su 15 feature comportamentali, k=15 (silhouette max con k≥8), seed=999.
+- silhouette=0.266 | ARI inter-seed=0.960 | cluster bilanciati (max 25.8%)
+- Louvain su union k-NN (k=10) come validazione alternativa: Q=0.887
 
-Queste non vanno rimesse in discussione senza motivo tecnico nuovo:
+### Anomaly detection (RQ3) — scelta metodi
 
-- `is_claimed` è variabile **esplorativa**, NON target di classificazione (imbalance + ambiguità semantica)
+**OddBall** (strutturale): ego-network (degree, triangoli) → fit power-law → residual score.
+Motivazione: cattura anomalie topologiche indipendentemente dalle feature.
+
+**IsolationForest** (feature-based): 300 estimators, contamination=0.10 su 19 feature.
+Motivazione: complementare a OddBall, cattura anomalie nello spazio feature.
+IsolationForest scelto su LOF per scalabilità e robustezza su alta dimensionalità.
+
+**Criterio cross-validation:** Jaccard ≥ 0.3 su ≥ 3 cluster — pre-registrato.
+Criterio formale non soddisfatto (0/15). Difesa: lift >> 1 è la metrica corretta con cluster di dimensioni
+variabili. Lift max IsoForest: 21.13x (C0, C10).
+
+### Layer interpretativi (nb08) — decisioni
+
+**Assortatività:** r≈0 globale, ma rapporto intra/inter=2.11x e lift intra C0=480x, C10=455x.
+Interpretazione: nessuna segregazione globale, ma C0 e C10 sono "bolle" conversazionali forti.
+
+**NMI Louvain vs k-means:** 0.075 — dimensioni ortogonali. Atteso in multi-layer: comportamento e
+struttura conversazionale catturano aspetti diversi. Non è un risultato negativo.
+
+**Feature importance:** Kruskal-Wallis con η² come effect size.
+Top discriminanti: betweenness (η²=0.728), burstiness_posts (0.705), out_degree (0.703).
+Tutte le 15 feature hanno p=0. η²>0.7 = effect size enormi → cluster ben separati.
+
+---
+
+## Risultati Finali per RQ
+
+### RQ1 — Caratterizzazione strutturale (nb05)
+- Nodi: 9.085 | Archi: 60.651 | Densità: 0.000735
+- α total degree = 2.149 ± 0.033 (Holtz 2026: 1.70 → rete "normalizzata" nel tempo)
+- α in-degree = 2.433 | α out-degree = 1.876
+- Avg clustering = 0.144 | Reciprocità = 0.261 (Holtz: 0.197 → più dialogo bidirezionale)
+- APL = 3.72 | Small-world sigma = **194.61** → small-world fortissimo
+- Q Louvain = 0.417 → struttura comunitaria significativa | 37 community | GCC 98.4%
+
+### RQ2 — Clustering comportamentale (nb06)
+- k=15 cluster su 15 feature comportamentali | silhouette=0.266 | ARI=0.960
+- C4 più grande (2346, 25.8%) | C8 più piccolo (172, 1.9%)
+- Louvain su union k-NN: Q=0.887 → struttura community nella similarity network
+
+### RQ3 — Cross-validation anomaly detection (nb07)
+- Criterio Jaccard ≥ 0.3: non soddisfatto (0/15) — geometricamente limitato da cluster piccoli
+- **Lift max OddBall: 4.53x** (C12) | **Lift max IsolationForest: 21.13x** (C0, C10)
+- C0 e C10: concentrano >50% top-500 anomalie pur essendo 2-3% del totale agenti
+- NMI IsoForest K=500: 0.0595
+
+### RQ — Layer interpretativi (nb08)
+- Assortatività r = -0.0043 (quasi zero globale)
+- Rapporto intra/inter conversazionale = **2.11x**
+- **Intra-cluster lift C0 = 480x | C10 = 455x** → bolle conversazionali
+- NMI Louvain vs k-means = 0.075 (dimensioni distinte, non ortogonali completamente)
+- Feature più discriminanti: betweenness (η²=0.728), burstiness_posts (0.705), out_degree (0.703)
+
+**Finding chiave della tesi:** C0 (n=213) e C10 (n=253) sono double-flagged:
+1. IsolationForest lift 21x (RQ3) → anomali nello spazio feature
+2. Intra-cluster lift 480x/455x (nb08) → si parlano quasi esclusivamente tra loro
+Multi-dimensional evidence di coordinamento.
+
+---
+
+## Cluster Fingerprints (per Cap 5)
+
+Feature top-8 per η²: betweenness, burstiness_posts, out_degree, reciprocity_local, egonet_density, mean_thread_depth, in_degree, pagerank
+
+| Cluster | n | Tratto alto | Tratto basso | Nome suggerito |
+|---|---|---|---|---|
+| **C0** | 213 | betweenness +2.78, pagerank +2.57, out_degree +2.41 | egonet_density | **Hub anomali** |
+| C1 | 372 | — | burstiness -1.60, betweenness -0.36 | Quieti regolari |
+| C2 | 386 | burstiness +2.27, in_degree +0.43 | mean_thread_depth | Burster |
+| C3 | 392 | reciprocity_local +2.11, betweenness +1.45 | burstiness | Conversatori bidirezionali |
+| C4 | 2346 | valori medi su tutto | — | Mainstream |
+| C5 | 421 | da verificare fingerprint | — | — |
+| C6 | 659 | da verificare fingerprint | — | — |
+| C7 | 175 | da verificare fingerprint | — | — |
+| C8 | 172 | da verificare fingerprint | — | — |
+| C9 | 432 | da verificare fingerprint | — | — |
+| **C10** | 253 | da verificare fingerprint | — | **Hub anomali 2** |
+| C11 | 725 | da verificare fingerprint | — | — |
+| C12 | 518 | da verificare fingerprint | — | — |
+| C13 | 1499 | da verificare fingerprint | — | — |
+| C14 | 533 | da verificare fingerprint | — | — |
+
+Fingerprint completo in `docs/results_rq_interpretive.md`.
+
+---
+
+## Struttura Tesi (bozza)
+
+**Cap 1 — Introduzione**
+- Moltbook come caso studio unico: social network nativo AI, dati pubblici
+- RQ principale e perché è rilevante (crescita agenti autonomi, rischio coordinamento)
+- Contributo originale: dataset crawlato da zero + pipeline multi-layer
+- Struttura della tesi
+
+**Cap 2 — Background e letteratura correlata**
+- Bot detection e Coordinated Inauthentic Behavior (CIB) — framework teorico
+- Letteratura su Moltbook: Holtz (gen-2026), MoltGraph, Price
+- Confronto con approcci esistenti: perché il nostro è diverso (no ground truth, rete nativa AI)
+- Metriche di rete per rilevazione coordinamento
+
+**Cap 3 — Dataset e metodologia**
+- Architettura crawler (4 fasi, resumable, rate limiting)
+- Schema DB, scelte di design (SQLite, upsert, checkpoint)
+- Limite strutturale API — quantificazione archi mancanti
+- Pipeline feature engineering (fase SQL + fase rete)
+- Preprocessing: trasformazioni log, RobustScaler, feature escluse per ridondanza
+
+**Cap 4 — RQ1: Caratterizzazione strutturale**
+- Power-law degree distribution (α=2.149)
+- Small-world sigma=194.61 — confronto con letteratura
+- Reciprocità 0.261 vs Holtz 0.197 — evoluzione temporale
+- Struttura comunitaria Q=0.417, 37 community
+
+**Cap 5 — RQ2: Clustering comportamentale**
+- Motivazione esclusione feature volume (iter v1→v2)
+- Selezione k=15 via sweep silhouette
+- Stabilità ARI=0.960 inter-seed
+- Heatmap profili cluster + naming (fingerprint)
+- Validazione Louvain su similarity network
+
+**Cap 6 — RQ3 + Layer interpretativi: Convergenza delle evidenze**
+- OddBall vs IsolationForest: approcci complementari
+- Lift come metrica primaria (giustificazione vs Jaccard)
+- Layer assortatività: rapporto intra/inter=2.11x
+- Double-flagging C0 e C10: anomalia feature + isolamento conversazionale
+- NMI Louvain vs k-means: dimensioni ortogonali come risultato positivo
+- Feature importance Kruskal-Wallis
+
+**Cap 7 — Discussione**
+- Sintesi evidenze multi-layer
+- Hedging "coordinamento": cosa possiamo e non possiamo concludere senza ground truth
+- Limite API come limite metodologico dichiarato
+- Confronto con Holtz: evoluzione rete nel tempo (α, reciprocità)
+- Validità dei cluster come archetipi comportamentali
+
+**Cap 8 — Conclusioni**
+- Risposta alle RQ
+- Contributo originale (dataset + pipeline)
+- Lavori futuri: ground truth, temporal analysis, API con auth
+
+---
+
+## Decisioni Metodologiche Fissate
+
+Non rimettere in discussione senza motivo tecnico nuovo:
+
+- `is_claimed` variabile **esplorativa**, NON target di classificazione
 - Self-loop rimossi dal grafo strutturale
 - Subset analitico = 9.096 agenti nel grafo conversazionale
-- `MIN_COMMENTS_FOR_CRAWL = 3` — abbassato da 5 a 3 su indicazione del relatore per ampliare il dataset; soglia 1-2 scartata perché post eliminati/vuoti causano errori 500; post con 0 commenti restano esclusi (nessun arco possibile)
-- RobustScaler senza clipping — outlier preservati perché sono segnale (hub del grafo)
-- `unique_targets` ed `egonet_size` esclusi dalla ML matrix per ridondanza
-- SQLite sufficiente, no migrazione a PostgreSQL
-- Jaccard ≥ 0.3 come soglia di overlap per validazione cross-metodo (RQ3)
+- `MIN_COMMENTS_FOR_CRAWL = 3` — abbassato da 5 su indicazione relatore; soglia 1-2 scartata per errori 500
+- RobustScaler senza clipping — outlier preservati (sono segnale: hub del grafo)
+- `unique_targets`, `egonet_size` esclusi per ridondanza con `out_degree`
+- SQLite sufficiente, no migrazione PostgreSQL
+- Jaccard ≥ 0.3 come soglia (pre-registrata); difesa via lift quando non soddisfatta
+- Feature volume escluse dal clustering: misurano *quanto*, non *come*
+- IsolationForest scelto su LOF per scalabilità
 
-## Artefatti prodotti — aggiornato giugno 2026
+---
 
-- `data/feature_matrix_graph_v1.parquet` — 9.096 × 20, zero NaN, post log-transform
-- `data/feature_matrix_scaled_v1.parquet` — scalato con RobustScaler
-- `data/scaler_v1.joblib` — RobustScaler serializzato
-- `docs/results_rq1.md` — tabella risultati RQ1 (prodotta da nb 05)
-- `docs/results_rq2.md` — tabella risultati RQ2 (prodotta da nb 06)
-- `data/cluster_assignments_v1.parquet` — (agent_id, cluster_id), k=5 k-means, 9096 righe
-- `data/similarity_network_v1.pkl` — union k-NN graph (k=10, cosine similarity)
-- `figures/05_degree_distribution_powerlaw.png` — fit power-law in/out/total degree
-- `figures/05_component_size_distribution.png` — distribuzione componenti connesse
-- `figures/05_community_size_distribution.png` — distribuzione community Louvain baseline
-
-## Analysis — stato notebook
+## Notebook Status
 
 | Notebook | Contenuto | Stato |
 |---|---|---|
 | `01_graph_analysis.ipynb` | analisi esplorativa grafo | output obsoleti, NON rieseguire |
-| `02_popolazione_table_agent_feature.ipynb` | feature di rete NetworkX → agent_features | COMPLETATO |
+| `02_popolazione_table_agent_feature.ipynb` | feature rete NetworkX → agent_features | COMPLETATO |
 | `03_sanity_check_agent_features.ipynb` | data quality sanity check | COMPLETATO |
 | `04a_nan_investigation.ipynb` | verifica NaN strutturali | COMPLETATO |
 | `04b_feature_matrix.ipynb` | costruzione feature matrix | COMPLETATO |
 | `04c_scaling.ipynb` | RobustScaler | COMPLETATO |
-| `05_structural_characterization.ipynb` | RQ1 — caratterizzazione strutturale | **COMPLETATO** — risultati in `docs/results_rq1.md` |
-| `06_similarity_network.ipynb` | RQ2 — similarity network + Louvain | **COMPLETATO** — risultati in `docs/results_rq2.md` |
-| `07_cross_validation.ipynb` | RQ3 — OddBall + IsolationForest + Jaccard cross-validation | **COMPLETATO** — risultati in `docs/results_rq3.md` |
+| `05_structural_characterization.ipynb` | RQ1 | COMPLETATO — `docs/results_rq1.md` |
+| `06_similarity_network.ipynb` | RQ2 — k-means clustering comportamentale | COMPLETATO — `docs/results_rq2.md` |
+| `07_cross_validation.ipynb` | RQ3 — OddBall + IsolationForest + Jaccard | COMPLETATO — `docs/results_rq3.md` |
+| `08_interpretive_analysis.ipynb` | Layer interpretativi — assortatività, NMI, feature importance | COMPLETATO — `docs/results_rq_interpretive.md` |
 | `src/testQuery.ipynb` | ad-hoc SQL exploration | utility |
 
-## Risultati RQ1 (già disponibili — da `docs/results_rq1.md`)
+---
 
-- Nodi: 9.085 | Archi: 60.651 | Densità: 0.000735
-- α total degree = 2.149 ± 0.033 (vs Holtz gen-2026: 1.70 → rete "normalizzata")
-- α in-degree = 2.433 | α out-degree = 1.876
-- Avg clustering = 0.144 (range umano tipico: 0.05–0.17)
-- Reciprocità = 0.261 (vs Holtz 0.197 → più dialogo bidirezionale nel tempo)
-- APL campionato = 3.72 (vs Holtz 2.91 su grafo più piccolo)
-- Small-world sigma = 194.61 → **small-world fortissimo confermato**
-- Modularity Q Louvain = 0.417 → struttura comunitaria significativa
-- 37 community, GCC 98.4%
+## Artefatti Prodotti
 
-## SPRINT FINALE — 5–12 giugno 2026 (obiettivo: tesi completa)
-
-Deadline hard: 16 giugno. Target ideale: 12 giugno per lasciare margine per raffinamenti.
-
-### Giorno 1–2 (5–6 giu) — Notebook 06: RQ2 Similarity Network
-Creare `notebooks/06_similarity_network.ipynb`:
-1. Carica `feature_matrix_scaled_v1.parquet`
-2. Costruisci k-NN graph cosine similarity (sweep k ∈ {5,10,15,20}, scegli k con motivazione)
-3. Louvain sulla similarity network → cluster candidati con sensitivity analysis (3 seed)
-4. Caratterizzazione cluster: heatmap profili medi, distribuzione dimensioni
-5. Salva `data/cluster_assignments_v1.parquet` (agent_id, cluster_id, silhouette opzionale)
-6. Salva `data/similarity_network_v1.gpickle`
-
-### Giorno 3 (7 giu) — Notebook 07: RQ3 Cross-validation
-Creare `notebooks/07_cross_validation.ipynb`:
-- OddBall custom: egonet (n_edges, n_triangles) → fit power-law → anomaly score
-- Anomaly detection alternativa: LOF o IsolationForest su feature_matrix_scaled se PyGOD ha problemi dipendenze
-- Jaccard tra cluster RQ2 e top-K anomalie → verifica criterio successo (≥3 cluster con Jaccard ≥ 0.3)
-- NMI come metrica secondaria tra le due partizioni
-Creare `notebooks/08_rq4_claimed.ipynb`:
-- Proporzione unclaimed per cluster vs baseline 1.1% → chi si discosta?
-
-### Giorno 4–5 (8–9 giu) — Scrittura tesi Cap 3, 4, 5, 6
-Struttura file tesi: scegliere formato con relatore (LaTeX o Word). Scrivere in italiano.
-- Cap 3 (Dataset e metodologia): crawler, schema DB, limite API strutturale, feature engineering, pipeline scaling
-- Cap 4 (RQ1): usare direttamente `docs/results_rq1.md` + figure notebook 05
-- Cap 5 (RQ2): usare risultati notebook 06
-- Cap 6 (RQ3): usare risultati notebook 07
-
-### Giorno 6–7 (10–11 giu) — Scrittura Cap 1, 2, 7, 8 + presentazione
-- Cap 1 (Introduzione): framing Moltbook, RQ principale, struttura tesi
-- Cap 2 (Background): bot detection, CIB framework, letteratura Moltbook (Holtz, MoltGraph, Price)
-- Cap 7 (Discussione): sintesi risultati, limite API, validità hedging "coordinamento"
-- Cap 8 (Conclusioni): risposta alle RQ, contributo originale, lavori futuri
-- Presentazione slide: 1 slide per RQ + risultati chiave
-
-### Giorno 8+ (12–16 giu) — Revisione, raffinamenti, presentazione
-- Revisione con supervisore (punti aperti: baseline umana RQ1, MoltGraph ground truth)
-- Appendice A: dettaglio 19 feature (da FEATURES.md)
-- Lucido: quantificare post >300 commenti (stima archi mancanti per limite API)
+| File | Contenuto |
+|---|---|
+| `data/feature_matrix_graph_v1.parquet` | 9096 × 20, zero NaN, post log-transform |
+| `data/feature_matrix_scaled_v1.parquet` | scalato RobustScaler |
+| `data/scaler_v1.joblib` | RobustScaler serializzato |
+| `data/cluster_assignments_v1.parquet` | (agent_id UUID, cluster_id), k=15, 9096 righe |
+| `data/similarity_network_v1.pkl` | union k-NN graph (k=10, cosine similarity) |
+| `docs/results_rq1.md` | risultati RQ1 |
+| `docs/results_rq2.md` | risultati RQ2 (sweep k, cluster sizes) |
+| `docs/results_rq3.md` | risultati RQ3 (Jaccard, NMI, lift) |
+| `docs/results_rq_interpretive.md` | risultati nb08 (assortatività, NMI, fingerprints) |
+| `figures/05_degree_distribution_powerlaw.png` | power-law fit |
+| `figures/05_component_size_distribution.png` | distribuzione componenti |
+| `figures/05_community_size_distribution.png` | community Louvain baseline |
+| `figures/06_kmeans_sweep.png` | sweep k silhouette |
+| `figures/06_cluster_heatmap.png` | heatmap profili cluster |
+| `figures/06_cluster_size_distribution.png` | distribuzione dimensioni cluster |
+| `figures/06_cluster_pca.png` | PCA cluster |
+| `figures/08_intercluster_flow.png` | matrice 15×15 flussi + lift |
+| `figures/08_louvain_vs_kmeans.png` | confusion matrix 37×15 |
+| `figures/08_feature_importance.png` | Kruskal-Wallis η² ranking |
+| `figures/08_cluster_fingerprints.png` | heatmap z-score top-8 feature |
