@@ -6,6 +6,8 @@ env/
 # Database (dati grezzi, non versionare)
 data/*.db
 data/*.sqlite
+src/data/*.db
+src/data/*.sqlite
 
 # Logs
 logs/
