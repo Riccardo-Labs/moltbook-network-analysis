@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(source venv/Scripts/activate)",
-      "Bash(pip install:*)",
-      "Bash(jupyter nbconvert:*)"
-    ]
-  }
-}

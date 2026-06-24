@@ -6,8 +6,20 @@ env/
 # Database (dati grezzi, non versionare)
 data/*.db
 data/*.sqlite
+data/*.db-journal
 src/data/*.db
 src/data/*.sqlite
+
+# Artefatti ML (binari pesanti, rigenerabili dai notebook)
+data/*.parquet
+data/*.pkl
+data/*.joblib
+
+# Figure (PNG, rigenerabili dai notebook)
+figures/
+
+# Claude Code (config locale)
+.claude/
 
 # Logs
 logs/
