@@ -64,7 +64,7 @@ Documentazione della feature matrix prodotta per la fase di analisi (clustering,
 |---|---|
 | `unique_targets` | Correlazione > 0.9999 con `out_degree` — ridondante |
 | `egonet_size` | Correlazione > 0.9999 con `out_degree` — ridondante |
-| `is_claimed` | 98.9% degli agenti è claimed → sbilanciamento estremo, non discriminante |
+| `is_claimed` | 98.6% degli agenti è claimed → sbilanciamento estremo, non discriminante |
 | `computed_at`, `feature_version` | Metadati operativi |
 | `first_activity`, `last_activity` | Timestamp grezzi, non feature ML |
 
